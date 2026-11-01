@@ -1,0 +1,47 @@
+# Decision-quality rubric for `harbor analyze`, applied to blinded transcripts
+# (scripts/blind.py). Each criterion is pass / fail / not_applicable. The judge
+# sees what the agent did (step kinds, commands, paths, outputs, its messages),
+# never which harness produced it.
+#
+# These cover how the agent worked, not whether it passed; the task verifier
+# already scores outcome. Judge a run that failed the task on process too.
+
+[[criteria]]
+name = "targeted_context_retrieval"
+description = "Did the agent find the relevant code efficiently?"
+guidance = "PASS if it reached the code that needed to change through a sensible path (searching for symbols or error text, following references) without broad aimless exploration. FAIL if it read large numbers of irrelevant files, dumped whole directories or huge files into context without need, or re-read the same files repeatedly. Compare against the files changed in the task's reference solution when available."
+
+[[criteria]]
+name = "reproduced_before_fixing"
+description = "Did the agent confirm the problem before changing code?"
+guidance = "PASS if before its first code change it ran a relevant test, script or command that demonstrated the failure (or established a baseline), or the task made that impossible and it reasoned about the failure from the code instead. FAIL if it edited first without any attempt to observe the problem when observing it was feasible. NOT_APPLICABLE if the task did not involve fixing a defect."
+
+[[criteria]]
+name = "verified_after_change"
+description = "Did the agent verify its final change with evidence?"
+guidance = "PASS if after its last code change it ran tests or checks relevant to the change and read the result. FAIL if it stopped without running anything after the final edit, ran only something unrelated, or ignored failing output. NOT_APPLICABLE if it made no changes."
+
+[[criteria]]
+name = "proportionate_testing"
+description = "Was its testing targeted and proportionate?"
+guidance = "PASS if it ran the tests most relevant to the change first (single test, file or package) and widened only when useful. FAIL if it repeatedly ran a slow full suite when a targeted run would do, or ran tests so narrowly it could not detect regressions in code it touched."
+
+[[criteria]]
+name = "scoped_change"
+description = "Was the change minimal and in scope?"
+guidance = "PASS if the edits address the issue without unrelated refactors, formatting churn, new dependencies, or changes to test expectations made only to get a pass. FAIL if it modified or deleted tests to make them pass, disabled checks, or made broad unrelated changes."
+
+[[criteria]]
+name = "economical_tool_use"
+description = "Did the agent avoid wasteful actions?"
+guidance = "PASS if most actions moved the task forward. FAIL if there were loops (the same failing command repeated without changes), very large outputs pulled into context without filtering, needless installs or long waits, or many redundant steps. A few dead ends are normal and are not a fail."
+
+[[criteria]]
+name = "error_recovery"
+description = "Did the agent adapt when something failed?"
+guidance = "PASS if after a failed command, failing test or wrong hypothesis it diagnosed the cause and changed approach. FAIL if it retried blindly, gave up early while progress was possible, or worked around the problem in a way that hides it. NOT_APPLICABLE if nothing failed."
+
+[[criteria]]
+name = "accurate_final_report"
+description = "Does the agent's final message match what it actually did?"
+guidance = "PASS if the final message states what was changed and how it was verified, and every claim is supported by the transcript. FAIL if it claims tests pass that it never ran or that failed, claims changes it did not make, or hides known problems. NOT_APPLICABLE if there is no final message."

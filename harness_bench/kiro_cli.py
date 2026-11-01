@@ -30,6 +30,8 @@ from harbor.agents.options import Cli, InstalledAgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from harness_bench.final_diff import capture_final_diff
+
 _OUTPUT_FILENAME = "kiro-cli.jsonl"
 _STDERR_FILENAME = "kiro-cli.stderr.txt"
 _PATH_SETUP = 'export PATH="$HOME/.local/bin:$PATH"; '
@@ -135,16 +137,19 @@ class KiroCli(BaseInstalledAgent):
         var = f"kiro_instruction_{uuid.uuid4().hex}"
         env_var = var.upper()
         logs = self.environment_logs_dir.as_posix()
-        await self.exec_as_agent(
-            environment,
-            command=(
-                f"{_PATH_SETUP}"
-                f'{var}="${env_var}"; unset {env_var}; '
-                f'kiro-cli chat {" ".join(flags)} "${var}" </dev/null '
-                f"2>{logs}/{_STDERR_FILENAME} | tee {logs}/{_OUTPUT_FILENAME}"
-            ),
-            env={"KIRO_API_KEY": key, env_var: instruction, "NO_COLOR": "1"},
-        )
+        try:
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    f"{_PATH_SETUP}"
+                    f'{var}="${env_var}"; unset {env_var}; '
+                    f'kiro-cli chat {" ".join(flags)} "${var}" </dev/null '
+                    f"2>{logs}/{_STDERR_FILENAME} | tee {logs}/{_OUTPUT_FILENAME}"
+                ),
+                env={"KIRO_API_KEY": key, env_var: instruction, "NO_COLOR": "1"},
+            )
+        finally:
+            await capture_final_diff(self, environment)
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:

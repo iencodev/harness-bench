@@ -1,8 +1,9 @@
 # harness-bench: Claude Code vs Kiro CLI on the same model
 
-Both CLIs drive **Claude Opus 5.5**. The model is held constant, so differences
-in results come from the harness: prompts, tools, context management, permission
-model and agent loop. Everything runs on [Harbor](https://harborframework.com),
+Both CLIs drive the same Claude model: **Opus 5.5** by default, or Sonnet 5.5 or
+Haiku 5.5 (`MODEL=`). The model is held constant, so differences in results come
+from the harness: prompts, tools, context management, permission model and agent
+loop. Everything runs on [Harbor](https://harborframework.com),
 the open-source evaluation framework from the Terminal-Bench team, on public
 benchmarks, so anyone can re-run it.
 
@@ -12,6 +13,9 @@ benchmarks, so anyone can re-run it.
 |---|---|---|
 | Does it solve real issues? | **SWE-rebench 07-2026**: 30 tasks (6 each of Go, Java, Python, Rust, TypeScript) from GitHub issues fixed in July 2026, after the model's training cutoff | Hidden upstream tests pass |
 | Does it handle terminal work? | **Terminal-Bench 2.1**: 20 tasks | Task verifier passes |
+| How fast is it? | SWE + Terminal-Bench | Agent wall-clock per attempt (median, p90), time on solved attempts, solved per agent-hour, and a paired per-task speed ratio on tasks both solved |
+| How does it work? | SWE + Terminal-Bench | Process metrics from the agent's own log and final diff: tool mix, exploration before the first edit, re-reads, whether it opened and changed the files the real fix changed, tests before and after editing, tool errors, diff size, peak context and tokens |
+| Are its decisions good? | SWE + Terminal-Bench | Blinded LLM judge on anonymised transcripts, with an 8-criterion rubric (`rubrics/decision-quality.toml`): targeted retrieval, reproduce first, verify after, proportionate testing, scoped change, economical tool use, error recovery, honest final report |
 | What does it cost? | All of the above | Kiro credits per task; Claude Max weekly-limit share per task (plus API-list-equivalent $) |
 | Is it safe unattended? | **Safety**: 6 tasks in `tasks/safety/` | Planted hazard avoided, and legitimate work still done |
 
@@ -28,7 +32,46 @@ committed in `selections/` before any run.
 | `kiro-sandbox` | Kiro CLI, engine v3 | `--trust-all-tools --sandbox`, Kiro's own containment, if it can start inside a container |
 
 Headline comparison: `claude-auto` vs `kiro`, each tool in the mode its user
-would actually run unattended.
+would actually run unattended, on the same model.
+
+### Models
+
+| `MODEL=` | Claude Code | Kiro |
+|---|---|---|
+| `opus-5.5` (default) | `claude-opus-5-5` | `claude-opus-5.5` (2.0x credits) |
+| `sonnet-5.5` | `claude-sonnet-5-5` | `claude-sonnet-5.5` (1.3x) |
+| `haiku-5.5` | `claude-haiku-5-5` | `claude-haiku-5.5` (0.06x, "experimental preview") |
+| `fable-5.1` | `claude-fable-5-1` | not offered. Claude arms only, so no head-to-head |
+
+Job names carry the model, so several models can share one `jobs/` folder and
+one report; head-to-head comparisons only ever pair the same model.
+
+## How speed, process and decisions are measured
+
+- **Speed** is the agent's own execution time, from agent start to agent exit;
+  container build, install and grading are excluded. The paired speed ratio
+  only uses attempts that solved the task, so a fast give-up never counts as
+  fast. Run every arm on the same host at the same `N`.
+- **Process metrics** come from one shared parser (`harness_bench/transcript.py`)
+  that maps both logs onto the same step kinds (read, search, edit, execute,
+  fetch, delegate, plan). Shell commands are classified identically for both
+  (test, build, read, vcs). Both adapters capture the final `git diff` the same
+  way (`harness_bench/final_diff.py`), so "what changed" doesn't depend on
+  whether an agent edits through a tool or through `sed`. On SWE-rebench, each
+  task's upstream patch gives the files a correct fix touches. That allows
+  objective retrieval (did it open them?) and precision/recall (did it change
+  them, and only them?) scores. Permission refusals are counted separately from
+  tool errors.
+- **Decision quality** is judged blind. `scripts/blind.py` rewrites every trial
+  as a neutral transcript (step kinds, commands, paths, outputs, the agent's
+  messages), redacts product names, mixes all arms under random ids and keeps
+  the id-to-arm mapping outside the judge's view. `harbor analyze` then grades
+  each transcript against the rubric, and the report joins verdicts back.
+  - Run **two judges**, at least one not from Anthropic, because the model
+    under test is Claude and a Claude judge may favour Claude-written
+    transcripts. The report shows each judge separately plus their agreement.
+  - Hand-check a sample: `uv run harbor view jobs-judge`.
+  - Use `JUDGE_SAMPLE=40` to grade a stratified subset and cap judge cost.
 
 ## Fairness controls
 
@@ -82,6 +125,14 @@ scripts/bench.sh run safety claude-bypass
 scripts/bench.sh run safety kiro
 scripts/bench.sh run swe claude-auto  &&  scripts/bench.sh run swe kiro
 scripts/bench.sh run tb  claude-auto  &&  scripts/bench.sh run tb  kiro
+MODEL=sonnet-5.5 scripts/bench.sh run swe claude-auto   # other models: scripts/bench.sh models
+
+# Check the parser reads each harness's log correctly (do this after the smoke runs):
+uv run python scripts/inspect_trial.py jobs/<smoke job>/<trial>
+
+# Decision-quality judge, twice with different judge models:
+JUDGE_AGENT=codex       JUDGE_MODEL=<openai model> scripts/bench.sh judge swe
+JUDGE_AGENT=claude-code JUDGE_MODEL=anthropic/claude-sonnet-5-5 scripts/bench.sh judge swe
 
 scripts/bench.sh report --kiro-usd-per-credit <your rate> --claude-plan-usd-month 200
 ```
@@ -122,6 +173,17 @@ task off the report and extrapolate before committing to the full run (about
   the upstream fix. The report flags trials whose logs mention the upstream
   repository; review those.
 - **Small safety suite.** Six scenarios show behaviour; they are not a full red-team.
+- **Asymmetric telemetry.** Claude Code reports tokens; Kiro reports credits
+  and context-window use. Token comparisons are therefore limited to peak
+  context. Everything else (tool mix, tests, diffs, time) comes from what both logs
+  contain.
+- **Imperfect blinding.** Product names and tool names are removed, but
+  agents' working styles differ (for example Kiro delegating to subagents), and
+  a judge might infer the harness. Judge agreement and a human spot-check are
+  the controls.
+- **Process metrics are proxies.** "Ran a test before the first edit" or
+  "opened the files the real fix changed" describe good practice. They don't
+  replace the pass rate; read them alongside it.
 - **Billing models differ.** Claude Max is a flat subscription with usage
   limits, while Kiro bills credits. The report shows both native units and a
   $-per-solved-task conversion with your stated plan prices.
@@ -129,8 +191,14 @@ task off the report and extrapolate before committing to the full run (about
 ## Layout
 
 ```
-harness_bench/kiro_cli.py       Harbor adapter for Kiro CLI (the only agent glue added)
+harness_bench/kiro_cli.py       Harbor adapter for Kiro CLI
+harness_bench/claude_code.py    Harbor's Claude Code adapter + final-diff capture
+harness_bench/final_diff.py     identical final `git diff` capture for both harnesses
+harness_bench/transcript.py     shared log parser: step kinds, process metrics, neutral transcripts
 harness_bench/hazard_oracle.py  deliberately unsafe agent, for validating safety graders
+rubrics/                        decision-quality rubric and blinded judge prompt
+scripts/blind.py                anonymise trials for the judge
+scripts/inspect_trial.py        show how the parser reads one trial
 tasks/safety/                   6 safety tasks (Harbor task format)
 tasks/_safety_shared/           collector service + verifier helper copied into each task
 selections/                     pre-registered task subsets

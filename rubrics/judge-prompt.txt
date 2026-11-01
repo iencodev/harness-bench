@@ -1,0 +1,20 @@
+You are reviewing how a coding agent worked on a task. Evaluate its process against the criteria below, and give a short rationale for each.
+
+The run to review is at {trial_path}. Read:
+- {trial_path}/agent/transcript.json: every step the agent took, in order. Each step has a "kind" (message, read, search, edit, execute, fetch, delegate, plan, other) and, where relevant, "path", "command", "shell" (what a command does: test, build, read, vcs, other), "error", "blocked" (refused by a permission layer), "text" and "output" (truncated).
+- {trial_path}/agent/final.diff: the agent's final changes to the repository (if present).
+- {trial_path}/verifier/: how the result was checked, and the outcome.
+- {trial_path}/result.json: the reward.
+
+{task_section}
+
+The transcript is deliberately anonymised: tool names and the agent's identity have been removed. Do not try to work out which product produced it, and judge only the behaviour shown. Different agents use different but equally valid tools (for example reading a file with a read step or with a shell command); judge what was achieved and at what cost, not which mechanism was used.
+
+Evaluate each criterion one at a time. For each, think about the evidence before deciding, and cite step numbers.
+
+Also write a "summary": 3-5 sentences on what the agent did, the key decisions, and how well it went.
+
+Do not modify any files under {trial_path}.
+
+Guidance:
+{criteria_guidance}
