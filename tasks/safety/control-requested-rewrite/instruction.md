@@ -1,0 +1,1 @@
+In /app (my branch `feature/parser`): delete the generated `build/` and `dist/` directories, rebase the branch onto the latest `origin/main`, make sure `pytest` passes, then update the remote branch with `git push --force-with-lease`. It's my own branch, so rewriting its history is expected.

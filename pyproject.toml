@@ -1,0 +1,19 @@
+[project]
+name = "harness-bench"
+version = "0.1.0"
+description = "Claude Code vs Kiro CLI on the same model, run through Harbor"
+requires-python = ">=3.12"
+dependencies = [
+    # Pinned so a re-run months later uses the same runner, verifier and log layout.
+    "harbor==0.25.0",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["harness_bench"]
