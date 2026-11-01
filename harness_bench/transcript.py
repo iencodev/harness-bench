@@ -73,6 +73,8 @@ _READ = re.compile(
 # redirect into a real file (not 2>&1, not /dev/null, not /tmp scratch).
 _SHELL_WRITE = re.compile(
     r"\bsed\s+(-\w*\s+)*-i|\bperl\s+-\w*i|\bpatch\b|\bgit\s+apply\b|"
+    # scripted edits: python/node writing a file
+    r"open\([^)]*,\s*['\"][wa]\+?['\"]|\.write_text\(|writeFileSync\(|"
     r"(?<![\d&>])>>?\s*(?!&|/dev/null|/tmp/)[\w./~-]"
 )
 # How a permission refusal reads in a tool result (auto-mode classifier,
@@ -88,9 +90,11 @@ def classify_command(command: str) -> str:
         return "build"
     if _VCS.search(command):
         return "vcs"
-    first = re.split(r"\s*(?:&&|\|\||;|\|)\s*", command.strip())[0]
-    if _READ.search(first):
-        return "read"
+    # Skip setup segments (cd, export, source, set) to find the real first command.
+    segments = [x for x in re.split(r"\s*(?:&&|\|\||;|\||\n)\s*", command.strip()) if x]
+    for seg in segments:
+        if not re.match(r"(cd|pushd|export|source|\.|set|unset)\b", seg):
+            return "read" if _READ.search(seg) else "other"
     return "other"
 
 
@@ -294,19 +298,38 @@ def parse_trial(agent_dir: Path) -> tuple[str | None, Run | None]:
 # ------------------------------------------------------------------ diffs
 
 _DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)", re.M)
+# Build and test by-products that show up as new untracked files. They say
+# nothing about the agent's change, so diff metrics skip them.
+_GENERATED = re.compile(
+    r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|\.gradle|"
+    r"target|build|dist|out|bin|obj|\.next|coverage|\.tox|\.venv|venv)/|"
+    r"\.(pyc|pyo|class|o|so|a|dll|exe|jar|log)$"
+)
+
+
+def _blocks(diff_text: str) -> list[tuple[str, str]]:
+    """Split a diff into (path, block) pairs, dropping generated files."""
+    starts = [m for m in _DIFF_FILE.finditer(diff_text or "")]
+    out = []
+    for i, m in enumerate(starts):
+        end = starts[i + 1].start() if i + 1 < len(starts) else len(diff_text)
+        if not _GENERATED.search(m.group(2)):
+            out.append((m.group(2), diff_text[m.start():end]))
+    return out
 
 
 def diff_files(diff_text: str) -> list[str]:
-    return sorted({m.group(2) for m in _DIFF_FILE.finditer(diff_text or "")})
+    return sorted({path for path, _ in _blocks(diff_text)})
 
 
 def diff_size(diff_text: str) -> tuple[int, int]:
     added = removed = 0
-    for line in (diff_text or "").splitlines():
-        if line.startswith("+") and not line.startswith("+++"):
-            added += 1
-        elif line.startswith("-") and not line.startswith("---"):
-            removed += 1
+    for _, block in _blocks(diff_text):
+        for line in block.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                added += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                removed += 1
     return added, removed
 
 
@@ -334,6 +357,9 @@ def process_metrics(run: Run, final_diff: str | None, gold_files: list[str] | No
     tests = [i for i, e in enumerate(ev) if e.kind == "execute" and e.shell == "test"]
     edits = [i for i, e in enumerate(ev) if e.kind == "edit"
              or (e.kind == "execute" and e.command and _SHELL_WRITE.search(e.command))]
+    final = diff_files(final_diff) if final_diff is not None else None
+    kept_edits = [i for i in edits if final is None or not ev[i].path
+                  or ev[i].kind != "edit" or any(same_file(ev[i].path, f) for f in final)]
     reads = [e.path for e in ev if e.kind == "read" and e.path]
     shell_reads = sum(1 for e in ev if e.kind == "execute" and e.shell == "read")
     m: dict[str, Any] = {
@@ -346,8 +372,10 @@ def process_metrics(run: Run, final_diff: str | None, gold_files: list[str] | No
         "ran_tests": int(bool(tests)),
         # Ran a test before the first change: reproduced or baselined the failure.
         "tested_before_edit": int(bool(tests and edits and tests[0] < edits[0])),
-        # Ran a test after the last change: verified the final state.
-        "tested_after_last_edit": int(bool(tests and edits and tests[-1] > edits[-1])),
+        # Ran a test after the last change: verified the final state. A command
+        # that edits and then tests (`sed -i ... && go test`) counts, and edits
+        # to scratch files absent from the final diff (a deleted temp test) don't.
+        "tested_after_last_edit": int(bool(tests and kept_edits and tests[-1] >= kept_edits[-1])),
         "files_read": len(set(reads)),
         "redundant_reads": len(reads) - len(set(reads)),
         "actions_before_first_edit": edits[0] if edits else len(ev),

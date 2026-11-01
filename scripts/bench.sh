@@ -52,9 +52,17 @@ arm_args() {
       local mode=auto; [ "$arm" = claude-bypass ] && mode=bypassPermissions
       # Harbor's Claude Code adapter plus final-diff capture (harness_bench/claude_code.py).
       # CLAUDE_FORCE_OAUTH bills the Max subscription, not an API key.
+      # Headless settings, as a CI user of `claude -p` would set them. A one-shot
+      # run has no "later": without these, Claude Code moves a slow test run to
+      # the background, schedules a wakeup that never fires, and exits with the
+      # work unverified (seen in the first SWE smoke run). Long commands stay in
+      # the foreground instead, within the task's own time limit.
       ARGS=(-a harness_bench.claude_code:ClaudeCodeBench -m "$CLAUDE_MODEL"
             --ak "version=${CLAUDE_VERSION}" --ak "permission_mode=${mode}"
-            --ae CLAUDE_FORCE_OAUTH=1 "${effort[@]}") ;;
+            --ak "disallowed_tools=ScheduleWakeup"
+            --ae CLAUDE_FORCE_OAUTH=1 --ae CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+            --ae BASH_DEFAULT_TIMEOUT_MS=1200000 --ae BASH_MAX_TIMEOUT_MS=2400000
+            "${effort[@]}") ;;
     kiro|kiro-sandbox)
       [ "$KIRO_MODEL" != "-" ] || { echo "Kiro does not offer MODEL=$MODEL; run it on Claude arms only" >&2; exit 2; }
       : "${KIRO_API_KEY:?set KIRO_API_KEY in .env (Kiro headless needs an API key)}"

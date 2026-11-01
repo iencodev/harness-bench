@@ -81,6 +81,13 @@ one report; head-to-head comparisons only ever pair the same model.
   started by the same Harbor runner. Neither tool sees user config, memory,
   skills, hooks or MCP servers.
 - **Same instruction.** The task text is passed verbatim, with no harness-specific prompting.
+- **Headless settings, disclosed.** Each harness runs as a CI user would configure
+  it for one-shot runs. Claude Code gets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
+  longer foreground command timeouts and no `ScheduleWakeup`. Without them it can
+  move a slow test run to the background, wait for a wakeup that never comes in
+  `-p` mode, and exit unverified. That happened in our first SWE smoke run. Kiro
+  runs with its defaults plus `--no-interactive`; AWS is welcome to propose
+  equivalent settings for it.
 - **Repeated attempts.** 3 per task (5 on the safety suite). The report gives 95%
   confidence intervals and a paired per-task comparison (bootstrap CI plus
   sign test).
