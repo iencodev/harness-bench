@@ -19,6 +19,7 @@ import csv
 import json
 import math
 import random
+import re
 import statistics
 import sys
 from collections import defaultdict
@@ -56,6 +57,9 @@ def parse_claude_usage(path: Path) -> dict:
                 out["rate_limit"].append((week.get("resetsAt"), float(week["utilization"])))
     return out
 
+
+# Shell commands that reach the network (where an agent could find the real fix).
+_NETWORK = re.compile(r"\b(curl|wget|gh|git\s+(clone|fetch|pull|ls-remote)|https?://)", re.I)
 
 _swe_cache: dict[str, dict] = {}
 
@@ -128,6 +132,7 @@ def load_trials(jobs_dir: Path, include_smoke: bool) -> list[dict]:
                 if c["rate_limit"]:
                     row["week_reset"], row["week_util_first"] = c["rate_limit"][0]
                     row["week_util_last"] = c["rate_limit"][-1][1]
+                    row["_week_samples"] = c["rate_limit"]
                 p = agent_dir / "claude-code.txt"
             else:
                 try:
@@ -142,8 +147,16 @@ def load_trials(jobs_dir: Path, include_smoke: bool) -> list[dict]:
             info = swe_task_info(task) if meta["suite"] == "swe" else {}
             if info.get("repo"):
                 # Did the agent go and read the upstream repo, where the real fix lives?
-                row["touched_upstream"] = int(f"github.com/{info['repo']}".lower() in log_text.lower())
+                # Only the agent's own actions count: the repo URL also appears in Go
+                # import paths, test output and code comments, which are not lookups.
+                row["touched_upstream"] = 0
             harness, run = parse_trial(agent_dir)
+            if info.get("repo") and run is not None:
+                repo = f"github.com/{info['repo']}".lower()
+                row["touched_upstream"] = int(any(
+                    repo in f"{e.command or ''} {e.path or ''}".lower()
+                    and (e.kind == "fetch" or _NETWORK.search(e.command or ""))
+                    for e in run.events))
             if run is not None:
                 diff_path = agent_dir / "final.diff"
                 diff = diff_path.read_text(errors="replace") if diff_path.is_file() else None
@@ -232,18 +245,15 @@ def weekly_util_delta(rows: list[dict]) -> float | None:
     only meaningful over many trials, and only if nothing else used the same
     Max account during the run.
     """
+    # Group every sample by the window it belongs to (resetsAt), so a weekly
+    # reset during the run doesn't read as negative or zero usage.
     by_window = defaultdict(list)
     for r in rows:
-        if r["week_util_first"] is not None:
-            by_window[r["week_reset"]].append(r)
+        for reset, util in r.get("_week_samples") or []:
+            by_window[reset].append(util)
     if not by_window:
         return None
-    total = 0.0
-    for window in by_window.values():
-        first = min(window, key=lambda r: r["started"] or 0)["week_util_first"]
-        last = max(window, key=lambda r: r["finished"] or 0)["week_util_last"]
-        total += max(0.0, last - first)
-    return total
+    return sum(max(u) - min(u) for u in by_window.values())
 
 
 def headline_pairs(variants: list[str]) -> list[tuple[str, str]]:
@@ -495,9 +505,10 @@ def main() -> None:
         raise SystemExit("no trials found")
     out = Path(args.out)
     out.mkdir(exist_ok=True)
-    fields = sorted({k for r in rows for k in r}, key=lambda k: (k not in rows[0], k))
+    fields = sorted({k for r in rows for k in r if not k.startswith("_")},
+                    key=lambda k: (k not in rows[0], k))
     with (out / "trials.csv").open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
 
